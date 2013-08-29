@@ -16,7 +16,7 @@
 				<configuration>
 					<source>1.6</source>
 					<target>1.6</target>
-					<enconding>utf-8</enconding>
+					<encoding>UTF-8</encoding>
 				</configuration>
 			</plugin>
 			<plugin>
