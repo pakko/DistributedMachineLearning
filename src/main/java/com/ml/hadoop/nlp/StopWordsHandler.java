@@ -1,9 +1,22 @@
 package com.ml.hadoop.nlp;
 
+import org.apache.mahout.common.StringTuple;
+
 public class StopWordsHandler {
 	/** 禁止实例化. */
     private StopWordsHandler() {
     }
+    
+    public static StringTuple dropStopWords(StringTuple oldTokens) {
+		StringTuple newTokens = new StringTuple();
+		for (String token : oldTokens.getEntries()) {
+			if (StopWordsHandler.isChineseStopWord(token) == false
+					&& StopWordsHandler.isEnglishStopWord(token) == false) {
+				newTokens.add(token);
+			}
+		}
+		return newTokens;
+	}
     
 	private static String chineseStopWordsList[] = { "--", "..", ">>", " [", " ]", "", ",", ".", "<", ">", 
 		"?", "/", "\\", "|", "-", "+", "*", "&", 

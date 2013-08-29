@@ -58,7 +58,7 @@ public class SequenceFileTokenizerMapper extends
 		Closeables.close(stream, true);
 		
 		//drop stop words
-		document = dropStopWords(document);
+		document = StopWordsHandler.dropStopWords(document);
 		context.write(key, document);
 	}
 
@@ -78,14 +78,5 @@ public class SequenceFileTokenizerMapper extends
 		}
 	}
 
-	private StringTuple dropStopWords(StringTuple oldTokens) {
-		StringTuple newTokens = new StringTuple();
-		for (String token : oldTokens.getEntries()) {
-			if (StopWordsHandler.isChineseStopWord(token) == false
-					&& StopWordsHandler.isEnglishStopWord(token) == false) {
-				newTokens.add(token);
-			}
-		}
-		return newTokens;
-	}
+	
 }
