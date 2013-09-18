@@ -30,7 +30,6 @@ import org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.mahout.common.HadoopUtil;
 import org.apache.mahout.common.StringTuple;
-import org.apache.mahout.vectorizer.document.SequenceFileTokenizerMapper;
 
 /**
  * This class converts a set of input documents in the sequence file format of {@link StringTuple}s.The

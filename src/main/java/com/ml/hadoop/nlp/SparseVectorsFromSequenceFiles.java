@@ -37,13 +37,14 @@ import org.apache.mahout.common.Pair;
 import org.apache.mahout.common.commandline.DefaultOptionCreator;
 import org.apache.mahout.common.lucene.AnalyzerUtils;
 import org.apache.mahout.math.hadoop.stats.BasicStats;
-import org.apache.mahout.vectorizer.DictionaryVectorizer;
 import org.apache.mahout.vectorizer.HighDFWordsPruner;
 import org.apache.mahout.vectorizer.collocations.llr.LLRReducer;
 import org.apache.mahout.vectorizer.common.PartialVectorMerger;
 import org.apache.mahout.vectorizer.tfidf.TFIDFConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.collect.Lists;
 
 import java.util.List;
 
@@ -75,6 +76,12 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
     Option analyzerNameOpt = obuilder.withLongName("analyzerName").withArgument(
             abuilder.withName("analyzerName").withMinimum(1).withMaximum(1).create()).withDescription(
             "The class name of the analyzer").withShortName("a").create();
+    
+    Option dictionaryPathOpt = obuilder.withLongName("dictionaryPath").withRequired(false).withDescription(
+            "Dictionary path for update TFIDF").withShortName("dp").create();
+    
+    Option docFrequencyPathOpt = obuilder.withLongName("docFrequencyPath").withRequired(false).withDescription(
+            "Doc frequency path for update TFIDF").withShortName("dfp").create();
 
     Option chunkSizeOpt = obuilder.withLongName("chunkSize").withArgument(
             abuilder.withName("chunkSize").withMinimum(1).withMaximum(1).create()).withDescription(
@@ -143,6 +150,7 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
             .create();
 
     Group group = gbuilder.withName("Options").withOption(minSupportOpt).withOption(analyzerNameOpt)
+    		.withOption(dictionaryPathOpt).withOption(docFrequencyPathOpt)
             .withOption(chunkSizeOpt).withOption(outputDirOpt).withOption(inputDirOpt).withOption(minDFOpt)
             .withOption(maxDFSigmaOpt).withOption(maxDFPercentOpt).withOption(weightOpt).withOption(powerOpt)
             .withOption(minLLROpt).withOption(numReduceTasksOpt).withOption(maxNGramSizeOpt).withOption(overwriteOutput)
@@ -209,19 +217,22 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
         AnalyzerUtils.createAnalyzer(analyzerClass);
       }
 
-      boolean processIdf;
+      //default process tfidf:1, tf:2, update tfidf:3
+      int processIdf;
 
       if (cmdLine.hasOption(weightOpt)) {
         String wString = cmdLine.getValue(weightOpt).toString();
         if ("tf".equalsIgnoreCase(wString)) {
-          processIdf = false;
+          processIdf = 2;
         } else if ("tfidf".equalsIgnoreCase(wString)) {
-          processIdf = true;
-        } else {
+          processIdf = 1;
+        } else if ("tfidf_update".equalsIgnoreCase(wString)) {
+          processIdf = 3;
+        } else { 
           throw new OptionException(weightOpt);
         }
       } else {
-        processIdf = true;
+        processIdf = 1;
       }
 
       int minDf = 1;
@@ -254,8 +265,6 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
       log.info("Tokenizing documents in {}", inputDir);
       Configuration conf = getConf();
       Path tokenizedPath = new Path(outputDir, DocumentProcessor.TOKENIZED_DOCUMENT_OUTPUT_FOLDER);
-      //TODO: move this into DictionaryVectorizer , and then fold SparseVectorsFrom with EncodedVectorsFrom
-      // to have one framework for all of this.
       DocumentProcessor.tokenizeDocuments(inputDir, analyzerClass, tokenizedPath, conf);
 
       boolean sequentialAccessOutput = false;
@@ -272,7 +281,13 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
               ? DictionaryVectorizer.DOCUMENT_VECTOR_OUTPUT_FOLDER + "-toprune"
               : DictionaryVectorizer.DOCUMENT_VECTOR_OUTPUT_FOLDER;
       log.info("Creating Term Frequency Vectors");
-      if (processIdf) {
+      
+      String dictionaryPath = null;
+      if (cmdLine.hasOption(dictionaryPathOpt)) {
+          dictionaryPath = (String) cmdLine.getValue(dictionaryPathOpt);
+      }
+      
+      if (processIdf == 1) {
         DictionaryVectorizer.createTermFrequencyVectors(tokenizedPath,
                 outputDir,
                 tfDirName,
@@ -286,6 +301,18 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
                 chunkSize,
                 sequentialAccessOutput,
                 namedVectors);
+      } else if(processIdf == 3) {
+    	  DictionaryVectorizer.createUpdateTermFrequencyVectors(tokenizedPath,
+                  outputDir,
+                  tfDirName,
+                  conf,
+                  maxNGramSize,
+                  dictionaryPath,
+                  norm,
+                  logNormalize,
+                  reduceTasks,
+                  sequentialAccessOutput,
+                  namedVectors);
       } else {
         DictionaryVectorizer.createTermFrequencyVectors(tokenizedPath,
                 outputDir,
@@ -302,13 +329,36 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
                 namedVectors);
       }
 
+      String docFrequencyPaths = null;
+	  if (cmdLine.hasOption(dictionaryPathOpt)) {
+		  docFrequencyPaths = (String) cmdLine.getValue(docFrequencyPathOpt);
+	  }
+		
       Pair<Long[], List<Path>> docFrequenciesFeatures = null;
       // Should document frequency features be processed
-      if (shouldPrune || processIdf) {
-        log.info("Calculating IDF");
-        docFrequenciesFeatures =
-                TFIDFConverter.calculateDF(new Path(outputDir, tfDirName), outputDir, conf, chunkSize);
-      }
+		if (shouldPrune || processIdf == 1) {
+			log.info("Calculating IDF");
+			docFrequenciesFeatures = TFIDFConverter.calculateDF(new Path(
+					outputDir, tfDirName), outputDir, conf, chunkSize);
+		} else if (processIdf == 3) {
+			// load docFrequency path
+			List<Path> docFrequencyChunks = Lists.newArrayList();
+			String[] paths = docFrequencyPaths.split(",");
+			for (String path : paths) {
+				int splitPos = path.lastIndexOf("/");
+				String docFrequencyPathBase = path.substring(0, splitPos);
+				String docFrequencyFile = path.substring(splitPos + 1,
+						path.length());
+				Path docFrequencyPath = new Path(docFrequencyPathBase, docFrequencyFile);
+				docFrequencyChunks.add(docFrequencyPath);
+			}
+			
+			//read docFrequencyFile to get featureCount and vectorCount
+			long featureCount = 0;
+			long vectorCount = 0;
+			Long[] counts = { featureCount, vectorCount };
+			docFrequenciesFeatures = new Pair<Long[], List<Path>>(counts, docFrequencyChunks);
+		}
 
       long maxDF = maxDFPercent; //if we are pruning by std dev, then this will get changed
       if (shouldPrune) {
@@ -330,7 +380,7 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
         Path prunedPartialTFDir =
                 new Path(outputDir, DictionaryVectorizer.DOCUMENT_VECTOR_OUTPUT_FOLDER + "-partial");
         log.info("Pruning");
-        if (processIdf) {
+        if (processIdf == 1 || processIdf == 3) {
           HighDFWordsPruner.pruneVectors(tfDir,
                   prunedTFDir,
                   prunedPartialTFDir,
@@ -355,7 +405,7 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
         }
         HadoopUtil.delete(new Configuration(conf), tfDir);
       }
-      if (processIdf) {
+      if (processIdf == 1 || processIdf == 3) {
         TFIDFConverter.processTfIdf(
                 new Path(outputDir, DictionaryVectorizer.DOCUMENT_VECTOR_OUTPUT_FOLDER),
                 outputDir, conf, docFrequenciesFeatures, minDf, maxDF, norm, logNormalize,
