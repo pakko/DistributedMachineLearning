@@ -32,6 +32,7 @@ import org.apache.mahout.common.StringTuple;
 import org.apache.mahout.common.commandline.DefaultOptionCreator;
 import org.apache.mahout.common.iterator.sequencefile.PathType;
 import org.apache.mahout.common.iterator.sequencefile.SequenceFileDirIterable;
+import org.apache.mahout.common.iterator.sequencefile.SequenceFileIterable;
 import org.apache.mahout.math.VectorWritable;
 import org.apache.mahout.vectorizer.Vectorizer;
 import org.apache.mahout.vectorizer.VectorizerConfig;
@@ -220,13 +221,23 @@ public final class DictionaryVectorizer extends AbstractJob implements
 		//load dictionary path
 		List<Path> dictionaryChunks = Lists.newArrayList();
 		String[] paths = dictionaryPaths.split(",");
+		int i = 0;
 		for(String path: paths) {
 			int splitPos = path.lastIndexOf("/");
 			String dictionaryPathBase = path.substring(0, splitPos);
 			String dictionaryFile = path.substring(splitPos + 1, path.length());
 			Path dictionaryPath = new Path(dictionaryPathBase, dictionaryFile);
 			dictionaryChunks.add(dictionaryPath);
+			
+			Configuration conf = new Configuration(baseConf);
+			for (Pair<IntWritable, LongWritable> record
+		            : new SequenceFileIterable<IntWritable, LongWritable>(dictionaryPath, true, conf)) {
+				i++;
+		    }
 		}
+		maxTermDimension[0] = i;
+		
+		log.info("dic path {}, size {}", dictionaryChunks, i);
 		
 		int partialVectorIndex = 0;
 		Collection<Path> partialVectorPaths = Lists.newArrayList();

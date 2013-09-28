@@ -27,6 +27,9 @@ import org.apache.commons.cli2.builder.GroupBuilder;
 import org.apache.commons.cli2.commandline.Parser;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
@@ -35,7 +38,9 @@ import org.apache.mahout.common.CommandLineUtil;
 import org.apache.mahout.common.HadoopUtil;
 import org.apache.mahout.common.Pair;
 import org.apache.mahout.common.commandline.DefaultOptionCreator;
+import org.apache.mahout.common.iterator.sequencefile.SequenceFileIterable;
 import org.apache.mahout.common.lucene.AnalyzerUtils;
+import org.apache.mahout.math.VectorWritable;
 import org.apache.mahout.math.hadoop.stats.BasicStats;
 import org.apache.mahout.vectorizer.HighDFWordsPruner;
 import org.apache.mahout.vectorizer.collocations.llr.LLRReducer;
@@ -77,19 +82,25 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
             abuilder.withName("analyzerName").withMinimum(1).withMaximum(1).create()).withDescription(
             "The class name of the analyzer").withShortName("a").create();
     
-    Option dictionaryPathOpt = obuilder.withLongName("dictionaryPath").withRequired(false).withDescription(
+    Option dictionaryPathOpt = obuilder.withLongName("dictionaryPath").withArgument(
+            abuilder.withName("dictionaryPath").withMinimum(1).withMaximum(1).create()).withDescription(
             "Dictionary path for update TFIDF").withShortName("dp").create();
     
-    Option docFrequencyPathOpt = obuilder.withLongName("docFrequencyPath").withRequired(false).withDescription(
+    Option docFrequencyPathOpt = obuilder.withLongName("docFrequencyPath").withArgument(
+            abuilder.withName("docFrequencyPath").withMinimum(1).withMaximum(1).create()).withDescription(
             "Doc frequency path for update TFIDF").withShortName("dfp").create();
 
+    Option tfVectorsPathOpt = obuilder.withLongName("tfVectorsPath").withArgument(
+            abuilder.withName("tfVectorsPath").withMinimum(1).withMaximum(1).create()).withDescription(
+            "TF Vectors path").withShortName("tfvp").create();
+    
     Option chunkSizeOpt = obuilder.withLongName("chunkSize").withArgument(
             abuilder.withName("chunkSize").withMinimum(1).withMaximum(1).create()).withDescription(
             "The chunkSize in MegaBytes. 100-10000 MB").withShortName("chunk").create();
 
     Option weightOpt = obuilder.withLongName("weight").withRequired(false).withArgument(
             abuilder.withName("weight").withMinimum(1).withMaximum(1).create()).withDescription(
-            "The kind of weight to use. Currently TF or TFIDF").withShortName("wt").create();
+            "The kind of weight to use. Currently TF , TFIDF or TFIDF_UPDATE").withShortName("wt").create();
 
     Option minDFOpt = obuilder.withLongName("minDF").withRequired(false).withArgument(
             abuilder.withName("minDF").withMinimum(1).withMaximum(1).create()).withDescription(
@@ -150,7 +161,7 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
             .create();
 
     Group group = gbuilder.withName("Options").withOption(minSupportOpt).withOption(analyzerNameOpt)
-    		.withOption(dictionaryPathOpt).withOption(docFrequencyPathOpt)
+    		.withOption(dictionaryPathOpt).withOption(docFrequencyPathOpt).withOption(tfVectorsPathOpt)
             .withOption(chunkSizeOpt).withOption(outputDirOpt).withOption(inputDirOpt).withOption(minDFOpt)
             .withOption(maxDFSigmaOpt).withOption(maxDFPercentOpt).withOption(weightOpt).withOption(powerOpt)
             .withOption(minLLROpt).withOption(numReduceTasksOpt).withOption(maxNGramSizeOpt).withOption(overwriteOutput)
@@ -280,11 +291,12 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
       String tfDirName = shouldPrune
               ? DictionaryVectorizer.DOCUMENT_VECTOR_OUTPUT_FOLDER + "-toprune"
               : DictionaryVectorizer.DOCUMENT_VECTOR_OUTPUT_FOLDER;
-      log.info("Creating Term Frequency Vectors");
+      log.info("Creating Term Frequency Vectors, prune {}", shouldPrune);
       
       String dictionaryPath = null;
       if (cmdLine.hasOption(dictionaryPathOpt)) {
           dictionaryPath = (String) cmdLine.getValue(dictionaryPathOpt);
+          log.info("begin dic path {}", dictionaryPath);
       }
       
       if (processIdf == 1) {
@@ -302,6 +314,7 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
                 sequentialAccessOutput,
                 namedVectors);
       } else if(processIdf == 3) {
+    	  log.info("begin update term----------------");
     	  DictionaryVectorizer.createUpdateTermFrequencyVectors(tokenizedPath,
                   outputDir,
                   tfDirName,
@@ -329,34 +342,62 @@ public final class SparseVectorsFromSequenceFiles extends AbstractJob {
                 namedVectors);
       }
 
+      
       String docFrequencyPaths = null;
 	  if (cmdLine.hasOption(dictionaryPathOpt)) {
 		  docFrequencyPaths = (String) cmdLine.getValue(docFrequencyPathOpt);
+		  log.info("doc frequency path {}", docFrequencyPaths);
+	  }
+	  String tfVectorsPaths = null;
+	  if (cmdLine.hasOption(tfVectorsPathOpt)) {
+		  tfVectorsPaths = (String) cmdLine.getValue(tfVectorsPathOpt);
+		  log.info("tf vectors path {}", tfVectorsPaths);
 	  }
 		
       Pair<Long[], List<Path>> docFrequenciesFeatures = null;
       // Should document frequency features be processed
-		if (shouldPrune || processIdf == 1) {
+		if (processIdf == 1) {
 			log.info("Calculating IDF");
 			docFrequenciesFeatures = TFIDFConverter.calculateDF(new Path(
 					outputDir, tfDirName), outputDir, conf, chunkSize);
+			log.info("...docFrequencyPathBase {}, docFrequencyFile {}", docFrequenciesFeatures.getFirst()[0], docFrequenciesFeatures.getFirst()[1]);
 		} else if (processIdf == 3) {
 			// load docFrequency path
 			List<Path> docFrequencyChunks = Lists.newArrayList();
 			String[] paths = docFrequencyPaths.split(",");
+			
+			long featureCount = 0;
 			for (String path : paths) {
 				int splitPos = path.lastIndexOf("/");
 				String docFrequencyPathBase = path.substring(0, splitPos);
 				String docFrequencyFile = path.substring(splitPos + 1,
 						path.length());
+				log.info("docFrequencyPathBase {}, docFrequencyFile {}", docFrequencyPathBase, docFrequencyFile);
 				Path docFrequencyPath = new Path(docFrequencyPathBase, docFrequencyFile);
 				docFrequencyChunks.add(docFrequencyPath);
+				
+				/*for (Pair<IntWritable, LongWritable> record
+			            : new SequenceFileIterable<IntWritable, LongWritable>(docFrequencyPath, true, conf)) {
+			        featureCount = Math.max(record.getFirst().get(), featureCount);
+			    }*/
 			}
+			featureCount = 107623;
+			featureCount++;
 			
+		    long vectorCount = Long.MAX_VALUE;
+			/*Path tfDirPath = new Path(tfVectorsPaths + "/part-r-00000");
+			int i = 0;
+			for (Pair<Text, VectorWritable> record
+		            : new SequenceFileIterable<Text, VectorWritable>(tfDirPath, true, conf)) {
+				i++;
+		    }
+			if (i > 0) {
+				vectorCount = i;
+			}*/
+		    vectorCount = 80000;
 			//read docFrequencyFile to get featureCount and vectorCount
-			long featureCount = 0;
-			long vectorCount = 0;
 			Long[] counts = { featureCount, vectorCount };
+			log.info("featureCount {}, vectorCount------------------ {}", featureCount, vectorCount);
 			docFrequenciesFeatures = new Pair<Long[], List<Path>>(counts, docFrequencyChunks);
 		}
 
